@@ -65,34 +65,27 @@ jobs:
         id: cache-ags
         uses: actions/cache@v4
         with:
-          path: ~/.local/bin/ags
-          key: ags-${{ env.AGS_VERSION }}-linux-x86_64
+          path: ~/.ags-cli
+          key: ags-${{ env.AGS_VERSION }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install AGS CLI
         if: steps.cache-ags.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          work="$(mktemp -d)"
-          cd "$work"
-          base="https://github.com/AccelByte/accelbyte-ags-cli/releases/download/v${AGS_VERSION}"
-          asset="ags-x86_64-unknown-linux-gnu.tar.gz"
-          curl -fsSL --retry 3 -o "$asset" "${base}/${asset}"
-          curl -fsSL --retry 3 -o checksums.txt "${base}/checksums.txt"
-          grep " ${asset}\$" checksums.txt | shasum -a 256 -c -
-          tar -xzf "$asset"
-          mkdir -p ~/.local/bin
-          install -m 0755 ags ~/.local/bin/ags
+          export CARGO_HOME="$HOME/.ags-cli"
+          mkdir -p "$CARGO_HOME"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/AccelByte/accelbyte-ags-cli/releases/download/v${AGS_VERSION}/accelbyte-ags-cli-installer.sh" \
+            | sh
 
       - name: Add AGS CLI to PATH
-        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        run: echo "$HOME/.ags-cli/bin" >> "$GITHUB_PATH"
 
       - name: Authenticate
         env:
           AGS_CLIENT_ID: ${{ secrets.AGS_CLIENT_ID }}
           AGS_CLIENT_SECRET: ${{ secrets.AGS_CLIENT_SECRET }}
-        run: |
-          echo "AGS_CLIENT_ID=$AGS_CLIENT_ID" >> "$GITHUB_ENV"
-          ags auth login --grant client-credentials --no-input
+        run: ags auth login --grant client-credentials --no-input
 
       - name: Build and push image
         run: |
