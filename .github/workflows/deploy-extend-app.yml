@@ -10,7 +10,7 @@ on:
         required: false
 
 env:
-  AGS_VERSION: '0.5.0'
+  AGS_VERSION: '0.6.0'
 
   AGS_BASE_URL: ${{ vars.AGS_BASE_URL }}
   AGS_NAMESPACE: ${{ vars.AGS_NAMESPACE }}
@@ -150,10 +150,13 @@ jobs:
         run: |
           set -uo pipefail
           set +e
+          # deploy-app is a shim onto the generated `csm deployments create`
+          # operation, so the image tag goes in the request body rather than
+          # a flag. (image-upload above is hand-written and takes --image-tag.)
           ags extend deploy-app \
             --namespace "$AGS_NAMESPACE" \
             --app "$EXTEND_APP" \
-            --image-tag "$IMAGE_TAG" \
+            --json "$(printf '{"imageTag":"%s"}' "$IMAGE_TAG")" \
             --wait --wait-limit "$WAIT_LIMIT" --wait-interval "$WAIT_INTERVAL" \
             --api-scope admin --api-version "$API_VERSION" \
             --format json --no-input --yes
