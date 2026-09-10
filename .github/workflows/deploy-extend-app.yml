@@ -90,7 +90,9 @@ jobs:
         env:
           AGS_CLIENT_ID: ${{ secrets.AGS_CLIENT_ID }}
           AGS_CLIENT_SECRET: ${{ secrets.AGS_CLIENT_SECRET }}
-        run: ags auth login --grant client-credentials --no-input
+        run: |
+          echo "AGS_CLIENT_ID=$AGS_CLIENT_ID" >> "$GITHUB_ENV"
+          ags auth login --grant client-credentials --no-input
 
       - name: Build and push image
         run: |
