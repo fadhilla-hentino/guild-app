@@ -1,0 +1,145 @@
+name: Deploy Extend App
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: 'Image tag to build and deploy (defaults to the commit SHA)'
+        required: false
+
+env:
+  AGS_VERSION: '0.6.0'
+
+  AGS_BASE_URL: ${{ vars.AGS_BASE_URL }}
+  AGS_NAMESPACE: ${{ vars.AGS_NAMESPACE }}
+  EXTEND_APP: ${{ vars.EXTEND_APP_NAME }}
+
+  IMAGE_TAG: ${{ inputs.image-tag || github.sha }}
+
+  API_VERSION: 'v5'
+  WAIT_LIMIT: '600'
+  WAIT_INTERVAL: '10'
+  AGS_NO_KEYCHAIN: '1'
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check configuration
+        run: |
+          set -euo pipefail
+          missing=0
+          check() {
+            if [ -z "${2:-}" ]; then
+              echo "::error::Missing repository variable $1. Set it under Settings → Secrets and variables → Actions → Variables. $3"
+              missing=1
+            fi
+          }
+          check AGS_BASE_URL    "$AGS_BASE_URL"    "Example: https://dev.yourstudio.accelbyte.io"
+          check AGS_NAMESPACE   "$AGS_NAMESPACE"   "Your game namespace."
+          check EXTEND_APP_NAME "$EXTEND_APP"      "The name of an Extend app that already exists."
+          if [ -z "${{ secrets.AGS_CLIENT_ID }}" ] || [ -z "${{ secrets.AGS_CLIENT_SECRET }}" ]; then
+            echo "::error::Missing secret AGS_CLIENT_ID and/or AGS_CLIENT_SECRET. Create a Confidential IAM client in the Admin Portal (Platform Configuration → IAM Clients) and store both under Settings → Secrets and variables → Actions → Secrets."
+            missing=1
+          fi
+          [ "$missing" -eq 0 ] || exit 1
+          echo "Deploying ${EXTEND_APP} to ${AGS_NAMESPACE} @ ${AGS_BASE_URL} as ${IMAGE_TAG}"
+
+      # ─────────────────────────────────────────────────────────────────
+      # Add your tests here if you want them to gate the deploy. Anything
+      # that exits non-zero stops the workflow before any image is pushed.
+      #
+      # - name: Test
+      #   run: make test
+      # ─────────────────────────────────────────────────────────────────
+
+      - name: Cache AGS CLI
+        id: cache-ags
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/ags
+          key: ags-${{ env.AGS_VERSION }}-linux-x86_64
+
+      - name: Install AGS CLI
+        if: steps.cache-ags.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          cd "$work"
+          base="https://github.com/AccelByte/accelbyte-ags-cli/releases/download/v${AGS_VERSION}"
+          asset="ags-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL --retry 3 -o "$asset" "${base}/${asset}"
+          curl -fsSL --retry 3 -o checksums.txt "${base}/checksums.txt"
+          grep " ${asset}\$" checksums.txt | shasum -a 256 -c -
+          tar -xzf "$asset"
+          mkdir -p ~/.local/bin
+          install -m 0755 ags ~/.local/bin/ags
+
+      - name: Add AGS CLI to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        env:
+          AGS_CLIENT_ID: ${{ secrets.AGS_CLIENT_ID }}
+          AGS_CLIENT_SECRET: ${{ secrets.AGS_CLIENT_SECRET }}
+        run: ags auth login --grant client-credentials --no-input
+
+      - name: Build and push image
+        run: |
+          ags extend image-upload \
+            --namespace "$AGS_NAMESPACE" \
+            --app "$EXTEND_APP" \
+            --image-tag "$IMAGE_TAG" \
+            --work-dir . \
+            --dockerfile Dockerfile \
+            --platform linux/amd64 \
+            --login \
+            --retry-limit 2
+
+      - name: Deploy and wait for rollout
+        id: deploy
+        run: |
+          set -uo pipefail
+          set +e
+          ags extend deploy-app \
+            --namespace "$AGS_NAMESPACE" \
+            --app "$EXTEND_APP" \
+            --image-tag "$IMAGE_TAG" \
+            --wait --wait-limit "$WAIT_LIMIT" --wait-interval "$WAIT_INTERVAL" \
+            --api-scope admin --api-version "$API_VERSION" \
+            --format json --no-input --yes
+          code=$?
+          set -e
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "result=deployed"  >> "$GITHUB_OUTPUT" ;;
+            6) echo "result=timed out" >> "$GITHUB_OUTPUT" ;;
+            *) echo "result=failed"    >> "$GITHUB_OUTPUT" ;;
+          esac
+          exit "$code"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Extend App Deployment"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| App | \`${EXTEND_APP}\` |"
+            echo "| Namespace | \`${AGS_NAMESPACE}\` |"
+            echo "| Image tag | \`${IMAGE_TAG}\` |"
+            echo "| Result | ${{ steps.deploy.outputs.result || 'did not run' }} |"
+            case "${{ steps.deploy.outputs.exit-code }}" in
+              3) echo ""; echo "> The rollout failed. Check the app logs before retrying." ;;
+              6) echo ""; echo "> The wait timed out after ${WAIT_LIMIT}s. The deployment may still complete — check the app status before redeploying." ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
