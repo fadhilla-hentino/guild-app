@@ -25,11 +25,6 @@ env:
   # Hosted runners have no OS keychain; go straight to the file fallback.
   AGS_NO_KEYCHAIN: '1'
 
-  # Give the CLI its own state directory, outside the Docker build context.
-  # A fresh AGS_HOME also triggers first-run setup, which creates and selects
-  # the default profile — without it the CLI fails with "No active profile".
-  AGS_HOME: ${{ runner.temp }}/ags-home
-
 jobs:
   deploy:
     name: Build and deploy
@@ -58,6 +53,13 @@ jobs:
             missing=1
           fi
           [ "$missing" -eq 0 ] || exit 1
+
+          # Give the CLI its own state directory, outside the Docker build
+          # context. A fresh AGS_HOME also triggers first-run setup, which
+          # creates and selects the default profile — without it the CLI
+          # fails with "No active profile".
+          echo "AGS_HOME=$RUNNER_TEMP/ags-home" >> "$GITHUB_ENV"
+
           echo "Deploying ${EXTEND_APP} to ${AGS_NAMESPACE} @ ${AGS_BASE_URL} as ${IMAGE_TAG}"
 
       # ─────────────────────────────────────────────────────────────────
