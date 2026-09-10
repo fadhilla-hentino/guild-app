@@ -25,6 +25,12 @@ env:
   # Hosted runners have no OS keychain; go straight to the file fallback.
   AGS_NO_KEYCHAIN: '1'
 
+  # Select the profile explicitly. AGS_PROFILE is resolved before the CLI's
+  # first-run profile setup, so this works on a clean runner regardless of
+  # what state exists on disk. Without it the CLI fails with
+  # "No active profile".
+  AGS_PROFILE: 'default'
+
 jobs:
   deploy:
     name: Build and deploy
