@@ -18,7 +18,7 @@ env:
 
   IMAGE_TAG: ${{ inputs.image-tag || github.sha }}
 
-  API_VERSION: 'v2'
+  API_VERSION: 'v5'
   WAIT_LIMIT: '600'
   WAIT_INTERVAL: '10'
 
@@ -76,22 +76,53 @@ jobs:
       #   run: make test
       # ─────────────────────────────────────────────────────────────────
 
-      - name: Cache AGS CLI
-        id: cache-ags
-        uses: actions/cache@v4
-        with:
-          path: ~/.ags-cli
-          key: ags-${{ env.AGS_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Install AGS CLI
-        if: steps.cache-ags.outputs.cache-hit != 'true'
+      # ═════════════════════════════════════════════════════════════════
+      # TEMPORARY — unreleased 0.6.0 build.
+      #
+      # Downloads a hand-built ags binary from a release on this repo
+      # instead of the official installer, because 0.6.0 (which carries
+      # `--wait`) is not published yet.
+      #
+      # TO REVERT once v0.6.0 ships:
+      #   1. Delete this step
+      #   2. Uncomment "Cache AGS CLI" and "Install AGS CLI" below
+      #   3. Set AGS_VERSION to the published version
+      # ═════════════════════════════════════════════════════════════════
+      - name: Install AGS CLI (TEMPORARY — unreleased 0.6.0 build)
         run: |
           set -euo pipefail
-          export CARGO_HOME="$HOME/.ags-cli"
-          mkdir -p "$CARGO_HOME"
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            "https://github.com/AccelByte/accelbyte-ags-cli/releases/download/v${AGS_VERSION}/accelbyte-ags-cli-installer.sh" \
-            | sh
+          work="$(mktemp -d)"; cd "$work"
+          base="https://github.com/<your-username>/extend-service-extension-go/releases/download/ags-dev"
+          asset="accelbyte-ags-cli-x86_64-unknown-linux-gnu.tar.xz"
+          curl -fsSL --retry 3 -O "${base}/${asset}"
+          curl -fsSL --retry 3 -O "${base}/${asset}.sha256"
+          shasum -a 256 -c "${asset}.sha256"
+          tar -xJf "$asset"
+          mkdir -p "$HOME/.ags-cli/bin"
+          install -m 0755 \
+            accelbyte-ags-cli-x86_64-unknown-linux-gnu/ags \
+            "$HOME/.ags-cli/bin/ags"
+          # Absolute path — $GITHUB_PATH only applies to later steps.
+          "$HOME/.ags-cli/bin/ags" --version
+
+      # ── Disabled while the step above is in use ──────────────────────
+      # - name: Cache AGS CLI
+      #   id: cache-ags
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: ~/.ags-cli
+      #     key: ags-${{ env.AGS_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+      #
+      # - name: Install AGS CLI
+      #   if: steps.cache-ags.outputs.cache-hit != 'true'
+      #   run: |
+      #     set -euo pipefail
+      #     export CARGO_HOME="$HOME/.ags-cli"
+      #     mkdir -p "$CARGO_HOME"
+      #     curl --proto '=https' --tlsv1.2 -LsSf \
+      #       "https://github.com/AccelByte/accelbyte-ags-cli/releases/download/v${AGS_VERSION}/accelbyte-ags-cli-installer.sh" \
+      #       | sh
+      # ─────────────────────────────────────────────────────────────────
 
       - name: Add AGS CLI to PATH
         run: echo "$HOME/.ags-cli/bin" >> "$GITHUB_PATH"
