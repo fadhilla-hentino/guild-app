@@ -92,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           work="$(mktemp -d)"; cd "$work"
-          base="https://github.com/<your-username>/extend-service-extension-go/releases/download/ags-dev"
+          base="https://github.com/fadhilla-hentino/guild-app/releases/download/ags-dev"
           asset="accelbyte-ags-cli-x86_64-unknown-linux-gnu.tar.xz"
           curl -fsSL --retry 3 -O "${base}/${asset}"
           curl -fsSL --retry 3 -O "${base}/${asset}.sha256"
