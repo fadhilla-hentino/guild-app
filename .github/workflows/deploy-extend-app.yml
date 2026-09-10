@@ -21,7 +21,14 @@ env:
   API_VERSION: 'v5'
   WAIT_LIMIT: '600'
   WAIT_INTERVAL: '10'
+
+  # Hosted runners have no OS keychain; go straight to the file fallback.
   AGS_NO_KEYCHAIN: '1'
+
+  # Give the CLI its own state directory, outside the Docker build context.
+  # A fresh AGS_HOME also triggers first-run setup, which creates and selects
+  # the default profile — without it the CLI fails with "No active profile".
+  AGS_HOME: ${{ runner.temp }}/ags-home
 
 jobs:
   deploy:
