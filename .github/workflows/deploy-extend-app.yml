@@ -10,7 +10,7 @@ on:
         required: false
 
 env:
-  AGS_VERSION: '0.6.0'
+  AGS_VERSION: '0.5.0'
 
   AGS_BASE_URL: ${{ vars.AGS_BASE_URL }}
   AGS_NAMESPACE: ${{ vars.AGS_NAMESPACE }}
