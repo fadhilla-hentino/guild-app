@@ -1,5 +1,10 @@
 name: Deploy Extend App
 
+# Builds this repository's container image, pushes it to the Extend app's own
+# registry, and deploys it. Runs on every push to main, or on demand.
+#
+# Setup lives in the README: three repository variables, two secrets, and a
+# confidential IAM client with the permissions listed there.
 on:
   push:
     branches: [main]
@@ -10,19 +15,37 @@ on:
         required: false
 
 env:
+  # AGS CLI version to install. Drives both the installer download URL and the
+  # cache key, so bumping this one value is all it takes to move to a new CLI
+  # release — the cache misses and reinstalls automatically.
   AGS_VERSION: '0.6.0'
 
+  # Your AGS environment base URL, e.g. https://dev.yourstudio.accelbyte.io
   AGS_BASE_URL: ${{ vars.AGS_BASE_URL }}
+
+  # The namespace the Extend app lives in.
   AGS_NAMESPACE: ${{ vars.AGS_NAMESPACE }}
+
+  # Name of the Extend app to deploy to. The app must already exist — this
+  # workflow deploys, it does not create.
   EXTEND_APP: ${{ vars.EXTEND_APP_NAME }}
 
+  # Tag applied to the built image. Defaults to the commit SHA so every deploy
+  # is immutable and traceable, and so rolling back is just re-running this
+  # workflow against an older ref.
   IMAGE_TAG: ${{ inputs.image-tag || github.sha }}
 
-  API_VERSION: 'v5'
+  # How long to wait for the rollout to reach a terminal state before giving
+  # up. Note this bounds the wait, not the deployment — a timeout does not
+  # stop or roll back a rollout that is still in progress.
   WAIT_LIMIT: '600'
+
+  # Seconds between rollout status polls.
   WAIT_INTERVAL: '10'
 
-  # Hosted runners have no OS keychain; go straight to the file fallback.
+  # Hosted runners have no OS keychain — no macOS Keychain, no Windows
+  # Credential Manager, no running Linux Secret Service. Skip the keychain
+  # attempt and go straight to file-based token storage.
   AGS_NO_KEYCHAIN: '1'
 
   # Select the profile explicitly. AGS_PROFILE is resolved before the CLI's
@@ -35,12 +58,23 @@ jobs:
   deploy:
     name: Build and deploy
     runs-on: ubuntu-latest
+
+    # This workflow only reads the repository. It never pushes commits, tags,
+    # or releases, so nothing beyond read access is needed.
     permissions:
       contents: read
 
     steps:
+      # Check out the repository. The Docker build context is the repository
+      # root, so this has to happen before the image build.
       - uses: actions/checkout@v4
 
+      # Fail fast on a misconfigured repository. Without this, a missing
+      # variable surfaces as a confusing CLI error part-way through a deploy;
+      # here it fails in seconds with a message naming exactly what is missing
+      # and where to set it.
+      #
+      # This step also exports AGS_HOME for every step that follows.
       - name: Check configuration
         run: |
           set -euo pipefail
@@ -55,39 +89,38 @@ jobs:
           check AGS_NAMESPACE   "$AGS_NAMESPACE"   "Your game namespace."
           check EXTEND_APP_NAME "$EXTEND_APP"      "The name of an Extend app that already exists."
           if [ -z "${{ secrets.AGS_CLIENT_ID }}" ] || [ -z "${{ secrets.AGS_CLIENT_SECRET }}" ]; then
-            echo "::error::Missing secret AGS_CLIENT_ID and/or AGS_CLIENT_SECRET. Create a Confidential IAM client in the Admin Portal (Platform Configuration → IAM Clients) and store both under Settings → Secrets and variables → Actions → Secrets."
+            echo "::error::Missing secret AGS_CLIENT_ID and/or AGS_CLIENT_SECRET. Create a confidential IAM client with the permissions listed in the README prerequisites, then store both under Settings → Secrets and variables → Actions → Secrets."
             missing=1
           fi
           [ "$missing" -eq 0 ] || exit 1
 
           # Give the CLI its own state directory, outside the Docker build
-          # context. A fresh AGS_HOME also triggers first-run setup, which
-          # creates and selects the default profile — without it the CLI
-          # fails with "No active profile".
+          # context — otherwise the access token sits in the build context and
+          # can end up baked into an image layer. A fresh AGS_HOME also
+          # triggers first-run setup, which creates and selects the default
+          # profile; without it the CLI fails with "No active profile".
           echo "AGS_HOME=$RUNNER_TEMP/ags-home" >> "$GITHUB_ENV"
 
           echo "Deploying ${EXTEND_APP} to ${AGS_NAMESPACE} @ ${AGS_BASE_URL} as ${IMAGE_TAG}"
 
-      # ─────────────────────────────────────────────────────────────────
-      # Add your tests here if you want them to gate the deploy. Anything
-      # that exits non-zero stops the workflow before any image is pushed.
+      # Add your tests here if you want them to gate the deploy. Anything that
+      # exits non-zero stops the workflow before any image is built or pushed.
       #
       # - name: Test
       #   run: make test
-      # ─────────────────────────────────────────────────────────────────
 
-      # ═════════════════════════════════════════════════════════════════
+      # ══════════════════════════════════════════════════════════════════════
       # TEMPORARY — unreleased 0.6.0 build.
       #
-      # Downloads a hand-built ags binary from a release on this repo
-      # instead of the official installer, because 0.6.0 (which carries
-      # `--wait`) is not published yet.
+      # Downloads a hand-built ags binary from a release on this repo instead
+      # of the official installer, because 0.6.0 (which carries `--wait`) is
+      # not published yet.
       #
       # TO REVERT once v0.6.0 ships:
       #   1. Delete this step
       #   2. Uncomment "Cache AGS CLI" and "Install AGS CLI" below
       #   3. Set AGS_VERSION to the published version
-      # ═════════════════════════════════════════════════════════════════
+      # ══════════════════════════════════════════════════════════════════════
       - name: Install AGS CLI (TEMPORARY — unreleased 0.6.0 build)
         run: |
           set -euo pipefail
@@ -105,13 +138,28 @@ jobs:
           # Absolute path — $GITHUB_PATH only applies to later steps.
           "$HOME/.ags-cli/bin/ags" --version
 
-      # ── Disabled while the step above is in use ──────────────────────
+      # ── Disabled while the step above is in use ───────────────────────────
+      #
+      # Restore a previously installed CLI from the Actions cache. Without it
+      # the installer downloads the release archive on every run, which adds a
+      # network dependency to the critical path. The key includes AGS_VERSION
+      # because cache entries are immutable — bumping the version produces a
+      # new key, which misses, which installs the new binary. OS and arch are
+      # in the key because the cached artifact is a compiled binary.
+      #
       # - name: Cache AGS CLI
       #   id: cache-ags
       #   uses: actions/cache@v4
       #   with:
       #     path: ~/.ags-cli
       #     key: ags-${{ env.AGS_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+      #
+      # Install the CLI, but only on a cache miss — a first run, a version
+      # bump, or an expired cache. CARGO_HOME is overridden so the cargo-dist
+      # installer puts the binary in ~/.ags-cli/bin (the directory the cache
+      # step covers) instead of the default ~/.cargo/bin. The curl flags
+      # refuse protocol downgrades, set a TLS floor, and fail on an HTTP error
+      # rather than piping a 404 body into sh.
       #
       # - name: Install AGS CLI
       #   if: steps.cache-ags.outputs.cache-hit != 'true'
@@ -122,17 +170,30 @@ jobs:
       #     curl --proto '=https' --tlsv1.2 -LsSf \
       #       "https://github.com/AccelByte/accelbyte-ags-cli/releases/download/v${AGS_VERSION}/accelbyte-ags-cli-installer.sh" \
       #       | sh
-      # ─────────────────────────────────────────────────────────────────
+      # ──────────────────────────────────────────────────────────────────────
 
+      # Put the CLI on PATH for subsequent steps. This runs unconditionally and
+      # has to be its own step: writes to $GITHUB_PATH only affect later steps,
+      # and the install step above is skipped entirely on a cache hit.
       - name: Add AGS CLI to PATH
         run: echo "$HOME/.ags-cli/bin" >> "$GITHUB_PATH"
 
+      # Authenticate with the confidential IAM client. Credentials are passed
+      # as step-scoped environment variables rather than command-line flags,
+      # since flag values appear in process listings and leak into logs more
+      # easily. --no-input makes the CLI fail instead of prompting.
       - name: Authenticate
         env:
           AGS_CLIENT_ID: ${{ secrets.AGS_CLIENT_ID }}
           AGS_CLIENT_SECRET: ${{ secrets.AGS_CLIENT_SECRET }}
         run: ags auth login --grant client-credentials --no-input
 
+      # Build the image and push it to the Extend app's own registry.
+      #
+      # --login mints the registry credentials from the session established
+      # above, so there is no second set of registry credentials to manage.
+      # --platform is pinned because an image built on arm64 starts locally and
+      # then fails on the cluster with "exec format error".
       - name: Build and push image
         run: |
           ags extend image-upload \
@@ -145,6 +206,15 @@ jobs:
             --login \
             --retry-limit 2
 
+      # Create the deployment and poll until the rollout reaches a terminal
+      # state or WAIT_LIMIT expires.
+      #
+      # The exit code is captured rather than allowed to abort the step, so the
+      # Summary step below can report a specific result. It is re-raised at the
+      # end so the job still fails:
+      #   0  deployed  — rollout completed, app healthy
+      #   3  failed    — rollout reached a terminal failure
+      #   6  timed out — WAIT_LIMIT elapsed, rollout may still be in progress
       - name: Deploy and wait for rollout
         id: deploy
         run: |
@@ -158,7 +228,7 @@ jobs:
             --app "$EXTEND_APP" \
             --json "$(printf '{"imageTag":"%s"}' "$IMAGE_TAG")" \
             --wait --wait-limit "$WAIT_LIMIT" --wait-interval "$WAIT_INTERVAL" \
-            --api-scope admin --api-version "$API_VERSION" \
+            --api-scope admin --api-version v5 \
             --format json --no-input --yes
           code=$?
           set -e
@@ -170,6 +240,8 @@ jobs:
           esac
           exit "$code"
 
+      # Write the outcome to the run page so it is readable without opening
+      # the logs. Runs on failure too, which is when it matters most.
       - name: Summary
         if: always()
         run: |
