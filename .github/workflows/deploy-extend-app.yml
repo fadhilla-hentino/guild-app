@@ -14,6 +14,14 @@ on:
         description: 'Image tag to build and deploy (defaults to the commit SHA)'
         required: false
 
+# Serialize deploys: only one runs at a time per branch. A new push waits for
+# the in-flight deploy to finish instead of racing it — otherwise two rollouts
+# to the same app could overlap and the older commit could win. cancel-in-progress
+# is false on purpose: killing a rollout mid-flight can leave the app half-updated.
+concurrency:
+  group: deploy-extend-app-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   # AGS CLI version to install. Drives both the installer download URL and the
   # cache key, so bumping this one value is all it takes to move to a new CLI
@@ -59,6 +67,11 @@ jobs:
     name: Build and deploy
     runs-on: ubuntu-latest
 
+    # Cap the whole job. WAIT_LIMIT only bounds the rollout step; without this a
+    # hung image build would run until GitHub's 6-hour default kills it, burning
+    # runner minutes. 30 minutes comfortably covers a normal build plus rollout.
+    timeout-minutes: 30
+
     # This workflow only reads the repository. It never pushes commits, tags,
     # or releases, so nothing beyond read access is needed.
     permissions:
@@ -76,9 +89,20 @@ jobs:
       #
       # This step also exports AGS_HOME for every step that follows.
       - name: Check configuration
+        env:
+          # Read the secrets through the environment rather than interpolating
+          # ${{ secrets.* }} straight into the script. Interpolation substitutes
+          # the literal secret value into the command text before bash runs; the
+          # env route keeps the value out of the script and matches how the
+          # Authenticate step below passes credentials.
+          AGS_CLIENT_ID: ${{ secrets.AGS_CLIENT_ID }}
+          AGS_CLIENT_SECRET: ${{ secrets.AGS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           missing=0
+          # "::error::" is a GitHub workflow command: echoing it both prints the
+          # message and flags it as a red error annotation on the run summary,
+          # so a misconfigured repo is obvious without scanning the logs.
           check() {
             if [ -z "${2:-}" ]; then
               echo "::error::Missing repository variable $1. Set it under Settings → Secrets and variables → Actions → Variables. $3"
@@ -88,12 +112,19 @@ jobs:
           check AGS_BASE_URL    "$AGS_BASE_URL"    "Example: https://dev.yourstudio.accelbyte.io"
           check AGS_NAMESPACE   "$AGS_NAMESPACE"   "Your game namespace."
           check EXTEND_APP_NAME "$EXTEND_APP"      "The name of an Extend app that already exists."
-          if [ -z "${{ secrets.AGS_CLIENT_ID }}" ] || [ -z "${{ secrets.AGS_CLIENT_SECRET }}" ]; then
+          if [ -z "${AGS_CLIENT_ID:-}" ] || [ -z "${AGS_CLIENT_SECRET:-}" ]; then
             echo "::error::Missing secret AGS_CLIENT_ID and/or AGS_CLIENT_SECRET. Create a confidential IAM client with the permissions listed in the README prerequisites, then store both under Settings → Secrets and variables → Actions → Secrets."
             missing=1
           fi
           [ "$missing" -eq 0 ] || exit 1
 
+          # Each step runs in its own shell, so shell variables do not survive
+          # from one step to the next. To pass data forward you append to the
+          # special files GitHub provides: $GITHUB_ENV (env vars for later
+          # steps), $GITHUB_PATH (PATH additions), $GITHUB_OUTPUT (named step
+          # outputs), and $GITHUB_STEP_SUMMARY (Markdown on the run page). This
+          # workflow uses all four.
+          #
           # Give the CLI its own state directory, outside the Docker build
           # context — otherwise the access token sits in the build context and
           # can end up baked into an image layer. A fresh AGS_HOME also
