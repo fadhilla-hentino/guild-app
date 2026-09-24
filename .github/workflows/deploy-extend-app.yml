@@ -18,7 +18,7 @@ env:
   # AGS CLI version to install. Drives both the installer download URL and the
   # cache key, so bumping this one value is all it takes to move to a new CLI
   # release — the cache misses and reinstalls automatically.
-  AGS_VERSION: '0.6.0'
+  AGS_VERSION: '0.5.1'
 
   # Your AGS environment base URL, e.g. https://dev.yourstudio.accelbyte.io
   AGS_BASE_URL: ${{ vars.AGS_BASE_URL }}
@@ -109,68 +109,34 @@ jobs:
       # - name: Test
       #   run: make test
 
-      # ══════════════════════════════════════════════════════════════════════
-      # TEMPORARY — unreleased 0.6.0 build.
-      #
-      # Downloads a hand-built ags binary from a release on this repo instead
-      # of the official installer, because 0.6.0 (which carries `--wait`) is
-      # not published yet.
-      #
-      # TO REVERT once v0.6.0 ships:
-      #   1. Delete this step
-      #   2. Uncomment "Cache AGS CLI" and "Install AGS CLI" below
-      #   3. Set AGS_VERSION to the published version
-      # ══════════════════════════════════════════════════════════════════════
-      - name: Install AGS CLI (TEMPORARY — unreleased 0.6.0 build)
-        run: |
-          set -euo pipefail
-          work="$(mktemp -d)"; cd "$work"
-          base="https://github.com/fadhilla-hentino/guild-app/releases/download/ags-dev"
-          asset="accelbyte-ags-cli-x86_64-unknown-linux-gnu.tar.xz"
-          curl -fsSL --retry 3 -O "${base}/${asset}"
-          curl -fsSL --retry 3 -O "${base}/${asset}.sha256"
-          shasum -a 256 -c "${asset}.sha256"
-          tar -xJf "$asset"
-          mkdir -p "$HOME/.ags-cli/bin"
-          install -m 0755 \
-            accelbyte-ags-cli-x86_64-unknown-linux-gnu/ags \
-            "$HOME/.ags-cli/bin/ags"
-          # Absolute path — $GITHUB_PATH only applies to later steps.
-          "$HOME/.ags-cli/bin/ags" --version
-
-      # ── Disabled while the step above is in use ───────────────────────────
-      #
       # Restore a previously installed CLI from the Actions cache. Without it
       # the installer downloads the release archive on every run, which adds a
       # network dependency to the critical path. The key includes AGS_VERSION
       # because cache entries are immutable — bumping the version produces a
       # new key, which misses, which installs the new binary. OS and arch are
       # in the key because the cached artifact is a compiled binary.
-      #
-      # - name: Cache AGS CLI
-      #   id: cache-ags
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: ~/.ags-cli
-      #     key: ags-${{ env.AGS_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-      #
+      - name: Cache AGS CLI
+        id: cache-ags
+        uses: actions/cache@v4
+        with:
+          path: ~/.ags-cli
+          key: ags-${{ env.AGS_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
       # Install the CLI, but only on a cache miss — a first run, a version
       # bump, or an expired cache. CARGO_HOME is overridden so the cargo-dist
       # installer puts the binary in ~/.ags-cli/bin (the directory the cache
       # step covers) instead of the default ~/.cargo/bin. The curl flags
       # refuse protocol downgrades, set a TLS floor, and fail on an HTTP error
       # rather than piping a 404 body into sh.
-      #
-      # - name: Install AGS CLI
-      #   if: steps.cache-ags.outputs.cache-hit != 'true'
-      #   run: |
-      #     set -euo pipefail
-      #     export CARGO_HOME="$HOME/.ags-cli"
-      #     mkdir -p "$CARGO_HOME"
-      #     curl --proto '=https' --tlsv1.2 -LsSf \
-      #       "https://github.com/AccelByte/accelbyte-ags-cli/releases/download/v${AGS_VERSION}/accelbyte-ags-cli-installer.sh" \
-      #       | sh
-      # ──────────────────────────────────────────────────────────────────────
+      - name: Install AGS CLI
+        if: steps.cache-ags.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="$HOME/.ags-cli"
+          mkdir -p "$CARGO_HOME"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/AccelByte/accelbyte-ags-cli/releases/download/v${AGS_VERSION}/accelbyte-ags-cli-installer.sh" \
+            | sh
 
       # Put the CLI on PATH for subsequent steps. This runs unconditionally and
       # has to be its own step: writes to $GITHUB_PATH only affect later steps,
