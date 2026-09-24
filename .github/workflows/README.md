@@ -2,13 +2,15 @@
 
 A GitHub Actions workflow that builds your Extend app's container image, pushes it to the app's registry, and deploys it — on every push to `main`, or on demand.
 
-It runs [AGS CLI](https://github.com/AccelByte/accelbyte-ags-cli) on a standard GitHub-hosted runner. There is no custom action to install and nothing to host: the workflow is a plain YAML file you copy into your own repository and edit.
+It runs [AGS CLI](https://github.com/AccelByte/accelbyte-ags-cli) on a standard GitHub-hosted runner. The workflow is a plain YAML file you copy into your own repository and edit.
 
 ```
 push to main  →  build image  →  push to app registry  →  deploy  →  wait for rollout
 ```
 
 Workflow file: `.github/workflows/deploy-extend-app.yml`
+
+> **New to GitHub Actions?** A *workflow* is this YAML file. GitHub reads it automatically and runs it on the events listed at the top — here, a push to `main` or a manual trigger. Each run executes on a *runner*: a fresh, temporary Linux machine GitHub provides, so nothing is installed on your own computer and every run starts from a clean slate. A workflow is made of *jobs*, and each job is a list of *steps* that run top to bottom. You don't install or host anything — commit the file and GitHub takes it from there.
 
 ## Prerequisites
 
@@ -29,9 +31,13 @@ Workflow file: `.github/workflows/deploy-extend-app.yml`
 
 ## Setup
 
-### 1. Add repository variables
+### 1. Add the workflow file to your repository
 
-**Settings → Secrets and variables → Actions → Variables**
+The workflow must live at `.github/workflows/deploy-extend-app.yml` on your repository's default branch. If you started from the sample app, it's already there — skip to the next step. If you're adding deployment to your own repo, copy that file into the same path and commit it. GitHub only picks up a workflow once the file is committed to the branch, so it won't appear under the **Actions** tab until then.
+
+### 2. Add repository variables
+
+In your GitHub repository, go to **Settings → Secrets and variables → Actions → Variables**.
 
 | Variable | Description | Example |
 | --- | --- | --- |
@@ -39,9 +45,9 @@ Workflow file: `.github/workflows/deploy-extend-app.yml`
 | `AGS_NAMESPACE` | The namespace the app lives in | `yourgame` |
 | `EXTEND_APP_NAME` | The name of the existing Extend app | `guild-service` |
 
-### 2. Add repository secrets
+### 3. Add repository secrets
 
-**Settings → Secrets and variables → Actions → Secrets**
+In your GitHub repository, go to **Settings → Secrets and variables → Actions → Secrets**.
 
 | Secret | Description |
 | --- | --- |
@@ -50,9 +56,9 @@ Workflow file: `.github/workflows/deploy-extend-app.yml`
 
 The first step of the workflow checks all five and fails with a specific message naming anything that is missing, so a misconfigured repository fails in about ten seconds rather than part-way through a deploy.
 
-### 3. Push to `main`
+### 4. Push to `main`
 
-That's the whole setup.
+That's the whole setup. The workflow runs on every push to the **`main`** branch (and on manual runs — see [Manual deploy and rollback](#manual-deploy-and-rollback)). If your repository's default branch has a different name, either rename it to `main` or change `branches: [main]` at the top of the workflow to match — otherwise nothing will trigger.
 
 ## Configuration
 
@@ -76,7 +82,7 @@ Two job-level safety settings sit outside the `env:` block:
 
 ## How AGS CLI gets installed
 
-Two steps handle this, and they work as a pair.
+Three steps handle this: cache, install, and PATH.
 
 ### Cache AGS CLI
 
@@ -89,9 +95,9 @@ Two steps handle this, and they work as a pair.
     key: ags-${{ env.AGS_VERSION }}-${{ runner.os }}-${{ runner.arch }}
 ```
 
-Every workflow run starts on a clean runner, so without a cache the CLI archive is downloaded from GitHub Releases on every single deploy. Caching it removes a network round-trip from the critical path, and means a slow or unavailable GitHub Releases endpoint doesn't fail your deploy.
+Every workflow run starts on a clean runner, so without a cache the CLI archive is downloaded from GitHub Releases on every single deploy. Caching it means that download happens only on the first run and after a version bump — not on every deploy — so a slow or unavailable GitHub Releases endpoint won't fail an otherwise-cached deploy.
 
-`~/.ags-cli` is where the install step puts the binary (see below). On a hit, the directory is restored before the install step runs.
+`~/.ags-cli` is where the install step puts the binary (see below).
 
 The cache key is worth understanding, because it is what makes version upgrades work without any manual cache clearing:
 
@@ -120,7 +126,7 @@ This runs only on a cache miss — a first run, a version bump, or an expired ca
 - **`--proto '=https' --tlsv1.2`** — refuse any protocol downgrade and set a TLS floor. Standard hygiene for a `curl | sh` install.
 - **`-f`** — fail on an HTTP error response. Without it, a 404 body gets piped straight into `sh`, which is both useless and unsafe.
 - **`-L`** — follow redirects. GitHub release assets redirect to a CDN.
-- **`v${AGS_VERSION}`, not `latest`** — a new CLI release should be something you opt into, not something that appears in your deploy pipeline unannounced.
+- **`v${AGS_VERSION}`, not `latest`** — the download URL pins an exact version (the "On pinning" note above explains why).
 
 ### Add AGS CLI to PATH
 
@@ -129,11 +135,11 @@ This runs only on a cache miss — a first run, a version bump, or an expired ca
   run: echo "$HOME/.ags-cli/bin" >> "$GITHUB_PATH"
 ```
 
-This one runs unconditionally, and it has to be its own step. Writes to `$GITHUB_PATH` only affect *subsequent* steps, not the step doing the writing — and the install step is skipped on a cache hit anyway, so PATH setup cannot live inside it.
+This one runs unconditionally, and it has to be its own step: a write to `$GITHUB_PATH` only affects *later* steps, not the step doing the writing, and the install step doesn't run on a cache hit — so PATH setup can't live inside it.
 
 ## Runner state and authentication
 
-Three environment variables exist because a CI runner is not a developer laptop.
+Three environment variables exist to make the CLI behave on a clean runner.
 
 | Variable | Why |
 | --- | --- |
@@ -190,7 +196,7 @@ One command builds the image and pushes it to the app's own registry. `--login` 
       --format json --no-input --yes
 ```
 
-`deploy-app` is a shim onto the generated `csm deployments create` operation, so the image tag goes in the request body rather than as a flag. (`image-upload` is hand-written, which is why it takes `--image-tag` directly — the inconsistency is expected.)
+`deploy-app` takes the image tag in a JSON request body (`--json`) rather than as a flag.
 
 `--wait` polls until the rollout reaches a terminal state or the wait limit expires. The step captures the exit code and maps it to a human-readable result:
 
@@ -242,6 +248,6 @@ Run `ags doctor` locally against the same base URL and client to check config, a
 
 - `AGS_CLIENT_SECRET` is a long-lived credential in a repository. Rotate it periodically and on personnel changes.
 - Grant only the permissions listed in the prerequisites, scoped to one namespace. If the secret is compromised, the blast radius is whatever you granted it — and that list deliberately cannot delete the app.
-- Keep `AGS_HOME` outside the workspace so the access token never enters the Docker build context.
+- Keep `AGS_HOME` outside the workspace — see [Runner state and authentication](#runner-state-and-authentication) for why.
 - Never move credentials from `secrets` into `vars`. Repository variables are not masked in logs.
 - The `permissions: contents: read` block at the job level is intentional — this workflow never needs write access to the repository.
