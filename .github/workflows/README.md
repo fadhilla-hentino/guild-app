@@ -60,12 +60,19 @@ Tunable values live in the `env:` block at the top of the workflow.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `AGS_VERSION` | `0.6.0` | AGS CLI version to install. Drives both the download URL and the cache key. |
+| `AGS_VERSION` | `0.5.1` | AGS CLI version to install. Drives both the download URL and the cache key. |
 | `WAIT_LIMIT` | `600` | Seconds to wait for the rollout before giving up. |
 | `WAIT_INTERVAL` | `10` | Seconds between rollout status polls. |
 | `IMAGE_TAG` | commit SHA | Tag applied to the built image. |
 
 > **On pinning.** `AGS_VERSION` fixes the CLI version rather than tracking the latest release. Upgrading is then a deliberate one-line edit, not something that lands in your pipeline unannounced.
+
+### Concurrency and timeout
+
+Two job-level safety settings sit outside the `env:` block:
+
+- **`concurrency`** serializes deploys per branch, with `cancel-in-progress: false`. If a second push lands while a deploy is still running, it waits for the first to finish rather than racing it — two rollouts to the same app can't overlap, and an in-flight rollout is never cancelled part-way through (which could leave the app half-updated).
+- **`timeout-minutes: 30`** caps the whole job. `WAIT_LIMIT` only bounds the rollout step; this covers the case where the image build itself hangs, so a stuck run can't run up to GitHub's 6-hour default before it's killed.
 
 ## How AGS CLI gets installed
 
